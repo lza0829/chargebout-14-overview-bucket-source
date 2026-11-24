@@ -1,7 +1,7 @@
 from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
-from app.db import db
+from app.db import db, write_db
 from app.services import core
 
 router = APIRouter()
@@ -21,7 +21,7 @@ def list_sites():
 
 @router.post("/站点")
 def create_site(body: SiteIn):
-    with db() as conn:
+    with write_db() as conn:
         try:
             cur = conn.execute(
                 "INSERT INTO sites(name,address,active) VALUES(?,?,?)",
@@ -34,13 +34,13 @@ def create_site(body: SiteIn):
 
 @router.post("/站点/{site_id}/启用")
 def enable_site(site_id: int):
-    with db() as conn:
+    with write_db() as conn:
         conn.execute("UPDATE sites SET active=1 WHERE id=?", (site_id,))
         return {"编号": site_id, "启用": True}
 
 
 @router.post("/站点/{site_id}/停用")
 def disable_site(site_id: int):
-    with db() as conn:
+    with write_db() as conn:
         conn.execute("UPDATE sites SET active=0 WHERE id=?", (site_id,))
         return {"编号": site_id, "启用": False}

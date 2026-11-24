@@ -1,11 +1,11 @@
 from __future__ import annotations
-from app.db import db, init_db
+from app.db import init_db, write_db
 from app.services.core import set_setting, today
 
 
 def seed_if_empty() -> None:
     init_db()
-    with db() as conn:
+    with write_db() as conn:
         n = conn.execute("SELECT COUNT(*) AS c FROM sites").fetchone()["c"]
         if n:
             return

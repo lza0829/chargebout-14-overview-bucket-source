@@ -1,7 +1,7 @@
 from __future__ import annotations
 from fastapi import APIRouter
 from pydantic import BaseModel
-from app.db import db, rows
+from app.db import db, rows, write_db
 from app.services.core import set_setting
 
 router = APIRouter()
@@ -20,6 +20,6 @@ def list_settings():
 
 @router.post("/设置")
 def upsert(body: SettingIn):
-    with db() as conn:
+    with write_db() as conn:
         set_setting(conn, body.键, body.值)
         return {"键": body.键, "值": body.值}

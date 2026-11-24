@@ -2,6 +2,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from app.db import db, row_dict, rows
+from app.services import counters
 
 
 def now_str() -> str:
@@ -43,10 +44,15 @@ def is_day_sealed(conn, day: str | None = None) -> bool:
 
 
 def overview(conn) -> dict:
-    piles = rows(conn.execute("SELECT status, COUNT(*) AS n FROM piles GROUP BY status").fetchall())
+    """总览仪表：钉桩桩数与充电中会话数由选定口径（臂 A 谓词）重放推导，读即重放。"""
+    dual = counters.replay_dual_counters(conn)
     sess = rows(conn.execute("SELECT status, COUNT(*) AS n FROM sessions GROUP BY status").fetchall())
-    pile_map = {p["status"]: p["n"] for p in piles}
     sess_map = {s["status"]: s["n"] for s in sess}
+    cond = rows(
+        conn.execute("SELECT status, COUNT(*) AS n FROM piles WHERE status IN ('故障','维护') GROUP BY status").fetchall()
+    )
+    cond_map = {c["status"]: c["n"] for c in cond}
+    total_piles = conn.execute("SELECT COUNT(*) AS n FROM piles").fetchone()["n"]
     open_kwh = conn.execute(
         "SELECT COALESCE(SUM(kwh),0) AS k FROM sessions WHERE status IN ('充电中','结算中')"
     ).fetchone()["k"]
@@ -55,11 +61,11 @@ def overview(conn) -> dict:
         (today(),),
     ).fetchone()["a"]
     return {
-        "桩位空闲": pile_map.get("空闲", 0),
-        "桩位占用": pile_map.get("占用", 0),
-        "桩位故障": pile_map.get("故障", 0),
-        "桩位维护": pile_map.get("维护", 0),
-        "充电中": sess_map.get("充电中", 0),
+        "桩位空闲": total_piles - dual["钉桩桩数"] - cond_map.get("故障", 0) - cond_map.get("维护", 0),
+        "桩位占用": dual["钉桩桩数"],
+        "桩位故障": cond_map.get("故障", 0),
+        "桩位维护": cond_map.get("维护", 0),
+        "充电中": dual["充电中会话数"],
         "结算中": sess_map.get("结算中", 0),
         "已关账": sess_map.get("已关账", 0),
         "已超时": sess_map.get("已超时", 0),
@@ -68,6 +74,8 @@ def overview(conn) -> dict:
         "本日关账金额": round(float(today_amount), 2),
         "营业日": today(),
         "充日已封印": is_day_sealed(conn),
+        "双计数口径": counters.PREDICATE_ID,
+        "拧花": counters.consistency_report(conn)["拧花"],
     }
 
 

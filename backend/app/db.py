@@ -85,32 +85,81 @@ CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+-- 幂等回执：半截回执兜底，同键重试返回原回执，不重复落数
+CREATE TABLE IF NOT EXISTS receipts (
+  idem_key TEXT PRIMARY KEY,
+  port TEXT NOT NULL,
+  body_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+-- 审计流水：只增不改不删（触发器兜底）
+CREATE TABLE IF NOT EXISTS audit_log (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  detail_json TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS trg_audit_no_update BEFORE UPDATE ON audit_log
+BEGIN SELECT RAISE(ABORT, '审计流水只增不改'); END;
+CREATE TRIGGER IF NOT EXISTS trg_audit_no_delete BEFORE DELETE ON audit_log
+BEGIN SELECT RAISE(ABORT, '审计流水只增不删'); END;
+
+-- 臂内去重规则：一条枪线至多一条钉桩会话（充电中/结算中），唯一索引兜底并发
+CREATE UNIQUE INDEX IF NOT EXISTS ux_sessions_active_gun
+  ON sessions(gun_id) WHERE status IN ('充电中','结算中');
+CREATE INDEX IF NOT EXISTS ix_sessions_status ON sessions(status);
+CREATE INDEX IF NOT EXISTS ix_sessions_active_pile
+  ON sessions(pile_id) WHERE status IN ('充电中','结算中');
 """
 
 
 def connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False, isolation_level=None, timeout=30.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA busy_timeout=30000")
+    conn.execute("PRAGMA journal_mode=WAL")
     return conn
 
 
 @contextmanager
 def db():
+    """读事务（延迟锁）：只读路径使用。"""
     conn = connect()
     try:
+        conn.execute("BEGIN")
         yield conn
-        conn.commit()
+        conn.execute("COMMIT")
     except Exception:
-        conn.rollback()
+        conn.execute("ROLLBACK")
+        raise
+    finally:
+        conn.close()
+
+
+@contextmanager
+def write_db():
+    """写事务：BEGIN IMMEDIATE 先取写锁，写口串行化，整笔提交或整笔回滚。"""
+    conn = connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        yield conn
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
         raise
     finally:
         conn.close()
 
 
 def init_db() -> None:
-    with db() as conn:
+    conn = connect()
+    try:
         conn.executescript(SCHEMA)
+    finally:
+        conn.close()
 
 
 def row_dict(row: sqlite3.Row | None) -> dict | None:
